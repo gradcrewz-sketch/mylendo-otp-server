@@ -8,24 +8,48 @@ const nodemailer = require("nodemailer");
 const PORT = process.env.PORT || 3000;
 const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASS = (process.env.EMAIL_PASS || "").replace(/\s+/g, "");
-const emailReady = !!(EMAIL_USER && EMAIL_PASS);
+const BREVO_API_KEY = (process.env.BREVO_API_KEY || "").trim();
+const SENDER = process.env.SENDER_EMAIL || EMAIL_USER;
+const useBrevo = !!(BREVO_API_KEY && SENDER);
+const useSmtp = !useBrevo && !!(EMAIL_USER && EMAIL_PASS);
+const emailReady = useBrevo || useSmtp;
 
 const TTL_SEC = 300;      // code valid for 5 minutes
 const RESEND_SEC = 30;    // wait before resend
 const MAX_TRIES = 5;      // wrong tries per code
 const MAX_SEND_PER_HOUR = 6; // per email address
 
-const transporter = emailReady
+const transporter = useSmtp
   ? nodemailer.createTransport({ service: "gmail", auth: { user: EMAIL_USER, pass: EMAIL_PASS } })
   : null;
 
-if (transporter) {
+// One function that sends an email, either through Brevo (works on Render, uses https) or Gmail SMTP (works on your own computer).
+async function sendEmail(to, subject, text, html) {
+  if (useBrevo) {
+    const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: { "api-key": BREVO_API_KEY, "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ sender: { name: "MYLENDO", email: SENDER }, to: [{ email: to }], subject, textContent: text, htmlContent: html }),
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!r.ok) throw new Error("Brevo " + r.status + " " + (await r.text()).slice(0, 300));
+    return;
+  }
+  await transporter.sendMail({ from: '"MYLENDO" <' + EMAIL_USER + ">", to, subject, text, html });
+}
+
+if (useBrevo) {
+  fetch("https://api.brevo.com/v3/account", { headers: { "api-key": BREVO_API_KEY, accept: "application/json" }, signal: AbortSignal.timeout(15000) }).then(
+    (r) => console.log(r.ok ? "Email OK (Brevo): ready to send from " + SENDER : "EMAIL PROBLEM (Brevo): key rejected, status " + r.status + ". Check BREVO_API_KEY."),
+    (e) => console.log("EMAIL PROBLEM (Brevo): " + e.message)
+  );
+} else if (useSmtp) {
   transporter.verify().then(
     () => console.log("Email OK: ready to send from " + EMAIL_USER),
-    (e) => console.log("EMAIL PROBLEM: " + e.message + "\nCheck EMAIL_USER and EMAIL_PASS (must be a Gmail App Password) in the .env file.")
+    (e) => console.log("EMAIL PROBLEM: " + e.message + "\nOn your own computer check EMAIL_USER and EMAIL_PASS (Gmail App Password). On Render use BREVO_API_KEY instead, because Render blocks Gmail SMTP.")
   );
 } else {
-  console.log("EMAIL NOT SET: create the .env file with EMAIL_USER and EMAIL_PASS. The website will use demo mode until then.");
+  console.log("EMAIL NOT SET: add BREVO_API_KEY and SENDER_EMAIL (online), or EMAIL_USER and EMAIL_PASS (own computer).");
 }
 
 const app = express();
@@ -47,7 +71,7 @@ app.get("/api/health", (req, res) => res.json({ ok: true, email: emailReady }));
 app.post("/api/otp/send", async (req, res) => {
   const email = String((req.body && req.body.email) || "").trim().toLowerCase();
   if (!validEmail(email)) return res.status(400).json({ ok: false, error: "bad_email", message: "Please enter a valid email address." });
-  if (!transporter) return res.status(503).json({ ok: false, error: "email_not_set", message: "The email server is not set up yet." });
+  if (!emailReady) return res.status(503).json({ ok: false, error: "email_not_set", message: "The email server is not set up yet." });
 
   const now = Date.now();
   const list = (sends.get(email) || []).filter((t) => now - t < 3600000);
@@ -63,16 +87,15 @@ app.post("/api/otp/send", async (req, res) => {
   const otp = String(crypto.randomInt(100000, 1000000));
   const requestId = crypto.randomUUID();
   try {
-    await transporter.sendMail({
-      from: '"MYLENDO" <' + EMAIL_USER + ">",
-      to: email,
-      subject: "Your MYLENDO code: " + otp,
-      text: "Your MYLENDO verification code is " + otp + ". It works for 5 minutes. If you did not ask for it, ignore this email.",
-      html: '<div style="font-family:Arial,sans-serif;max-width:420px;margin:auto;padding:20px">' +
+    await sendEmail(
+      email,
+      "Your MYLENDO code: " + otp,
+      "Your MYLENDO verification code is " + otp + ". It works for 5 minutes. If you did not ask for it, ignore this email.",
+      '<div style="font-family:Arial,sans-serif;max-width:420px;margin:auto;padding:20px">' +
         '<h2 style="color:#224074">MYLENDO</h2><p>Your verification code is:</p>' +
         '<p style="font-size:34px;letter-spacing:8px;font-weight:bold;color:#35aa80">' + otp + "</p>" +
         '<p style="color:#555">It works for 5 minutes. If you did not ask for it, you can ignore this email.</p></div>'
-    });
+    );
   } catch (e) {
     console.log("Send error: " + e.message);
     return res.status(502).json({ ok: false, error: "send_failed", message: "Could not send the email. Please try again." });
