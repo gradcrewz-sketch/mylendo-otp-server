@@ -40,7 +40,7 @@ async function sendEmail(to, subject, text, html) {
 
 if (useBrevo) {
   fetch("https://api.brevo.com/v3/account", { headers: { "api-key": BREVO_API_KEY, accept: "application/json" }, signal: AbortSignal.timeout(15000) }).then(
-    (r) => console.log(r.ok ? "Email OK (Brevo): ready to send from " + SENDER : "EMAIL PROBLEM (Brevo): key rejected, status " + r.status + ". Check BREVO_API_KEY."),
+       async (r) => console.log(r.ok ? "Email OK (Brevo): ready to send from " + SENDER : "EMAIL PROBLEM (Brevo): status " + r.status + " " + (await r.text()).slice(0, 300)),
     (e) => console.log("EMAIL PROBLEM (Brevo): " + e.message)
   );
 } else if (useSmtp) {
