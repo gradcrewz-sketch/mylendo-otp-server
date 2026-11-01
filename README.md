@@ -81,4 +81,4 @@ node server.js
 3. Browse items, add listings, and use the pickup code when you meet.
 
 ## 8. Team
-Team name: _add here_ · Members: _add here_
+Team name:CYBORG· Members: GEETHALAKSHMI A,ALAN PAUL R,DHARSHAN R,J L HEMANTH,KARTHIKEYAN S
